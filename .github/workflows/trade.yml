@@ -1,0 +1,33 @@
+name: Autonomous Trading Agent
+
+on:
+  schedule:
+    - cron: '0 12 * * *'  # Täglich um 12:00 UTC
+  workflow_dispatch:       # Manueller Start
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Install dependencies
+        run: |
+          pip install web3 requests python-dotenv bnbagent
+
+      - name: Create .env file
+        run: |
+          echo "WALLET_PASSWORD=${{ secrets.WALLET_PASSWORD }}" >> .env
+          echo "PRIVATE_KEY=${{ secrets.PRIVATE_KEY }}" >> .env
+          echo "TWAK_ACCESS_ID=${{ secrets.TWAK_ACCESS_ID }}" >> .env
+          echo "TWAK_HMAC_SECRET=${{ secrets.TWAK_HMAC_SECRET }}" >> .env
+
+      - name: Run Trading Agent
+        run: python pancake_trader.py
