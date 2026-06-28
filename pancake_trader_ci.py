@@ -1,124 +1,34 @@
 import os
 import time
 import requests
+import json
+import sys
+from datetime import datetime
 from dotenv import load_dotenv
 from web3 import Web3
-from bnbagent import EVMWalletProvider
 
 load_dotenv()
 
-# ==========================================
-# 1. Wallet verbinden
-# ==========================================
-print("🤖 Starte PancakeSwap Trading Agent (GITHUB ACTIONS - 1 USDC TEST)...")
-wallet = EVMWalletProvider(
-    password=os.getenv("WALLET_PASSWORD"),
-    private_key=os.getenv("PRIVATE_KEY")
-)
-print(f"✅ Agent-Wallet verbunden: {wallet.address}")
+print("🤖 Starte PancakeSwap Sniper Agent (CI)...")
+print(f"🕒 Zeit: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 # ==========================================
-# 2. PancakeSwap Router (MAINNET)
+# 1. Wallet
 # ==========================================
-BSC_MAINNET_RPC = "https://bsc-dataseed.binance.org/"
+private_key = os.getenv("PRIVATE_KEY")
+if not private_key:
+    print("❌ PRIVATE_KEY nicht in .env gefunden")
+    sys.exit(1)
+
+wallet_address = Web3().eth.account.from_key(private_key).address
+print(f"✅ Wallet verbunden: {wallet_address}")
+
+# ==========================================
+# 2. PancakeSwap Router (Mainnet)
+# ==========================================
+BSC_RPC = "https://bsc-dataseed.binance.org/"
 PANCAKE_ROUTER = "0x10ED43C718714eb63d5aA57B78B54704E256024E"
-USDC = "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d"
 WBNB = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
-
-USDC_ABI = [
-    {
-        "constant": True,
-        "inputs": [
-            {"name": "_owner", "type": "address"},
-            {"name": "_spender", "type": "address"}
-        ],
-        "name": "allowance",
-        "outputs": [{"name": "", "type": "uint256"}],
-        "type": "function"
-    },
-    {
-        "constant": False,
-        "inputs": [
-            {"name": "_spender", "type": "address"},
-            {"name": "_value", "type": "uint256"}
-        ],
-        "name": "approve",
-        "outputs": [{"name": "", "type": "bool"}],
-        "type": "function"
-    }
-]
-
-def approve_usdc():
-    print("🔑 Prüfe USDC-Freigabe...")
-    w3 = Web3(Web3.HTTPProvider(BSC_MAINNET_RPC))
-    private_key = os.getenv("PRIVATE_KEY")
-    account = w3.eth.account.from_key(private_key)
-    usdc_contract = w3.eth.contract(address=USDC, abi=USDC_ABI)
-    
-    current_allowance = usdc_contract.functions.allowance(account.address, PANCAKE_ROUTER).call()
-    if current_allowance > 100 * 10**18:
-        print("✅ USDC-Freigabe bereits vorhanden.")
-        return True
-    
-    amount_to_approve = 100 * 10**18
-    tx = usdc_contract.functions.approve(PANCAKE_ROUTER, amount_to_approve).build_transaction({
-        'from': account.address,
-        'gas': 200000,
-        'gasPrice': w3.eth.gas_price,
-        'nonce': w3.eth.get_transaction_count(account.address)
-    })
-    signed = account.sign_transaction(tx)
-    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
-    return receipt['status'] == 1
-
-def get_fear_and_greed():
-    try:
-        url = "https://api.alternative.me/fng/"
-        response = requests.get(url, timeout=10)
-        data = response.json()
-        if data and "data" in data:
-            latest = data["data"][0]
-            value = int(latest["value"])
-            classification = latest["value_classification"]
-            print(f"📈 Fear & Greed: {value} – {classification}")
-            return value, classification
-    except Exception as e:
-        print(f"⚠️ Fehler beim Abrufen der Daten: {e}")
-    return None, None
-
-class RiskManager:
-    def __init__(self, initial_balance_usd=100):
-        self.initial_balance = initial_balance_usd
-        self.daily_loss = 0
-        self.trades_today = 0
-        self.last_trade_day = None
-        self.current_balance = initial_balance_usd
-
-    def can_trade(self, amount_usd, current_day):
-        print("🛡️ Führe Risikoprüfung durch...")
-        loss_percent = (self.initial_balance - self.current_balance) / self.initial_balance
-        if loss_percent > 0.30:
-            print(f"❌ TRADE GESTOPPT: Max. Drawdown von 30% erreicht!")
-            return False
-        if amount_usd > self.initial_balance * 0.20:
-            print(f"❌ TRADE ABGELEHNT: Betrag überschreitet Positionslimit (max. 20%)")
-            return False
-        if self.daily_loss > self.initial_balance * 0.10:
-            print(f"❌ TRADE GESTOPPT: Tägliches Verlustlimit erreicht!")
-            return False
-        if current_day != self.last_trade_day:
-            self.trades_today = 0
-            self.last_trade_day = current_day
-        if self.trades_today >= 5:
-            print(f"❌ TRADE ABGELEHNT: Tägliches Trade-Limit erreicht.")
-            return False
-        print("✅ Risikoprüfung bestanden.")
-        return True
-
-    def record_trade(self, amount_usd, current_day):
-        self.trades_today += 1
-        print(f"💰 Trade aufgezeichnet: ${amount_usd}")
 
 ROUTER_ABI = [
     {
@@ -132,133 +42,128 @@ ROUTER_ABI = [
         "outputs": [{"internalType": "uint256[]", "name": "amounts", "type": "uint256[]"}],
         "stateMutability": "payable",
         "type": "function"
-    },
-    {
-        "inputs": [
-            {"internalType": "uint256", "name": "amountIn", "type": "uint256"},
-            {"internalType": "uint256", "name": "amountOutMin", "type": "uint256"},
-            {"internalType": "address[]", "name": "path", "type": "address[]"},
-            {"internalType": "address", "name": "to", "type": "address"},
-            {"internalType": "uint256", "name": "deadline", "type": "uint256"}
-        ],
-        "name": "swapExactTokensForTokens",
-        "outputs": [{"internalType": "uint256[]", "name": "amounts", "type": "uint256[]"}],
-        "stateMutability": "nonpayable",
-        "type": "function"
     }
 ]
 
-def pancake_swap(action, amount_usd):
-    print(f"🚀 Führe {action}-Trade auf PancakeSwap aus...")
-    print(f"💰 Betrag: ${amount_usd} USDC")
+# ==========================================
+# 3. Token finden (über DexScreener)
+# ==========================================
+def finde_token():
+    """Findet einen neuen Token zum Snipen"""
+    try:
+        url = "https://api.dexscreener.com/latest/dex/search?q=BSC"
+        response = requests.get(url, timeout=10)
+        data = response.json()
+        
+        # BSC-Paare mit mindestens 10.000 USD Liquidität filtern
+        for pair in data.get("pairs", []):
+            if pair.get("chainId") != "bsc":
+                continue
+            
+            liq = float(pair.get("liquidity", {}).get("usd", 0))
+            if liq < 10000:
+                continue
+            
+            # Bekannte Scam-Token vermeiden
+            symbol = pair.get("baseToken", {}).get("symbol", "").upper()
+            if any(scam in symbol for scam in ["RUG", "SCAM", "HONEYPOT", "TEST"]):
+                continue
+            
+            # Token-Adresse holen
+            token_addr = pair.get("baseToken", {}).get("address")
+            if token_addr and token_addr != WBNB:
+                print(f"✅ Token gefunden: {symbol} @ {token_addr}")
+                print(f"   💧 Liquidität: ${liq:.2f}")
+                return token_addr, symbol
+                
+    except Exception as e:
+        print(f"❌ Fehler bei Token-Suche: {e}")
     
-    w3 = Web3(Web3.HTTPProvider(BSC_MAINNET_RPC))
+    return None, None
+
+# ==========================================
+# 4. Token mit BNB kaufen (direkter Swap)
+# ==========================================
+def kaufe_token(token_adresse, amount_bnb):
+    """Kauft Token direkt mit BNB (kein USDC nötig)"""
+    print(f"🚀 Kaufe Token mit {amount_bnb} BNB...")
+    
+    w3 = Web3(Web3.HTTPProvider(BSC_RPC))
     if not w3.is_connected():
-        print("❌ Keine Verbindung zum BSC Mainnet")
+        print("❌ Keine Verbindung zu BSC")
         return None
     
-    private_key = os.getenv("PRIVATE_KEY")
     account = w3.eth.account.from_key(private_key)
+    print(f"🔑 Sender: {account.address}")
     
     router = w3.eth.contract(address=PANCAKE_ROUTER, abi=ROUTER_ABI)
+    amount_in_wei = int(amount_bnb * 10**18)
     
-    if action == "BUY":
-        path = [USDC, WBNB]
-        amount_in = int(amount_usd * 10**18)
-        amount_out_min = 0
-        tx = router.functions.swapExactTokensForTokens(
-            amount_in,
-            amount_out_min,
-            path,
-            account.address,
-            int(time.time()) + 1200
-        ).build_transaction({
-            'from': account.address,
-            'gas': 500000,
-            'gasPrice': w3.eth.gas_price,
-            'nonce': w3.eth.get_transaction_count(account.address)
-        })
-    else:
-        print("🔑 Verkaufe BNB über swapExactETHForTokens...")
-        bnb_price_usd = 600
-        bnb_amount = amount_usd / bnb_price_usd
-        amount_in_wei = int(bnb_amount * 10**18)
-        path = [WBNB, USDC]
-        amount_out_min = 0
-        tx = router.functions.swapExactETHForTokens(
-            amount_out_min,
-            path,
-            account.address,
-            int(time.time()) + 1200
-        ).build_transaction({
-            'from': account.address,
-            'value': amount_in_wei,
-            'gas': 500000,
-            'gasPrice': w3.eth.gas_price,
-            'nonce': w3.eth.get_transaction_count(account.address)
-        })
+    # Transaktion bauen
+    tx = router.functions.swapExactETHForTokens(
+        0,  # amountOutMin = 0 (akzeptiere jede Menge)
+        [WBNB, token_adresse],  # Pfad: BNB -> WBNB -> Token
+        account.address,
+        int(time.time()) + 1200
+    ).build_transaction({
+        'from': account.address,
+        'value': amount_in_wei,
+        'gas': 500000,
+        'gasPrice': w3.eth.gas_price,
+        'nonce': w3.eth.get_transaction_count(account.address)
+    })
     
-    print("📤 Sende Transaktion...")
-    signed = account.sign_transaction(tx)
-    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-    print(f"✅ Transaktion gesendet! Hash: {tx_hash.hex()}")
-    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
-    
-    if receipt['status'] == 1:
-        print(f"✅ SWAP erfolgreich! Tx: {tx_hash.hex()}")
-        return tx_hash.hex()
-    else:
-        print("❌ SWAP fehlgeschlagen")
+    try:
+        signed = account.sign_transaction(tx)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        print(f"✅ Transaktion gesendet: {tx_hash.hex()}")
+        
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+        if receipt['status'] == 1:
+            print(f"✅ SWAP erfolgreich! Tx: {tx_hash.hex()}")
+            return tx_hash.hex()
+        else:
+            print("❌ SWAP auf der Blockchain fehlgeschlagen")
+            return None
+    except Exception as e:
+        print(f"❌ Transaktionsfehler: {e}")
         return None
 
 # ==========================================
-# 5. Hauptprogramm (ONCE – für GitHub Actions)
+# 5. Hauptprogramm
 # ==========================================
-if __name__ == "__main__":
+def main():
     print("\n" + "="*50)
-    print("🚀 BNB HACK TRADING AGENT – GITHUB ACTIONS MODUS")
+    print("🚀 MEME-COIN SNIPER (CI-MODUS)")
     print("="*50)
     
-    # Approve einmalig prüfen
-    if not approve_usdc():
-        print("❌ Approve fehlgeschlagen. Agent beendet.")
-        exit(1)
+    # 1. Token finden
+    token_adresse, token_symbol = finde_token()
+    if not token_adresse:
+        print("❌ Kein handelbarer Token gefunden")
+        sys.exit(1)
     
-    risk_manager = RiskManager(initial_balance_usd=100)
-    current_day = time.strftime("%Y-%m-%d")
-
-    value, _ = get_fear_and_greed()
-    if value is None:
-        print("❌ Konnte Marktdaten nicht abrufen.")
-        exit(1)
-
-    if value <= 25:
-        action = "BUY"
-        reason = "Extreme Fear – Kaufsignal! (1 USDC Test)"
-        trade_amount = 1
-    elif value >= 75:
-        action = "SELL"
-        reason = "Extreme Greed – Verkaufssignal! (1 USDC Test)"
-        trade_amount = 1
+    # 2. Mit kleinem BNB-Betrag kaufen
+    kauf_betrag = 0.0017  # ~1 USD
+    print(f"\n💰 Kaufe {token_symbol} mit {kauf_betrag} BNB...")
+    
+    tx_hash = kaufe_token(token_adresse, kauf_betrag)
+    
+    if tx_hash:
+        print(f"✅ Erfolg! Tx: {tx_hash}")
+        print(f"📊 Token: {token_symbol}")
+        print(f"🔗 https://bscscan.com/tx/{tx_hash}")
+        sys.exit(0)
     else:
-        action = "HOLD"
-        reason = f"Neutral ({value}) – Abwarten."
-        trade_amount = 0
+        print("❌ Trade fehlgeschlagen")
+        sys.exit(1)
 
-    print(f"🧠 Entscheidung: {action} – {reason}")
-
-    if action in ["BUY", "SELL"]:
-        if risk_manager.can_trade(trade_amount, current_day):
-            tx_hash = pancake_swap(action, trade_amount)
-            if tx_hash:
-                risk_manager.record_trade(trade_amount, current_day)
-                print("✅ Trade erfolgreich!")
-            else:
-                print("❌ Trade fehlgeschlagen")
-                exit(1)
-        else:
-            print("⛔ Handel blockiert.")
-    else:
-        print("⏳ Keine Aktion – kein Trade heute.")
-
-    print("\n🏁 Analyse beendet.")
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n🛑 Vom Benutzer gestoppt")
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Schwerwiegender Fehler: {e}")
+        sys.exit(1)
