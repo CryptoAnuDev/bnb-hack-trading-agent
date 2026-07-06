@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# Trading data (local, nicht auf GitHub)
+positions.json
+trades.json
+*.json
