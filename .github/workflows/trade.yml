@@ -8,7 +8,7 @@ on:
 jobs:
   trade:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -16,11 +16,10 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'  # ← Geändert von 3.14 auf 3.12
+          python-version: '3.12'
 
       - name: Install dependencies
-        run: |
-          pip install web3 requests python-dotenv bnbagent
+        run: pip install -r requirements.txt
 
       - name: Create .env file
         run: |
@@ -29,5 +28,5 @@ jobs:
           echo "TWAK_ACCESS_ID=${{ secrets.TWAK_ACCESS_ID }}" >> .env
           echo "TWAK_HMAC_SECRET=${{ secrets.TWAK_HMAC_SECRET }}" >> .env
 
-      - name: Run Trading Agent (CI version)
-        run: python pancake_trader_ci.py
+      - name: Run PancakeSwap Trading Agent
+        run: python pancake_trader.py

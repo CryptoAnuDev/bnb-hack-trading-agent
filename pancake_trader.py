@@ -1,26 +1,31 @@
 import os
 import time
 import requests
-import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from dotenv import load_dotenv
 from web3 import Web3
 from bnbagent import EVMWalletProvider
+from storage.positions import save_position, close_position, resume_open_positions, has_open_positions
+from storage.trades import log_trade
 
 load_dotenv()
+
+AGENT_NAME = "PancakeSwap Meme-Coin Sniper"
+
+
+def print_status_header():
+    print("=" * 50)
+    print(f"🤖 {AGENT_NAME} – {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 50)
+
 
 # ==========================================
 # 1. Konfiguration & Wallet
 # ==========================================
-print("🤖 Starte Meme-Coin Sniper Agent (1 USD Trades)...")
-print(f"🕒 Startzeit: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-
-# Wallet laden
 wallet = EVMWalletProvider(
     password=os.getenv("WALLET_PASSWORD"),
-    private_key=os.getenv("PRIVATE_KEY")
+    private_key=os.getenv("PRIVATE_KEY"),
 )
-print(f"✅ Agent-Wallet verbunden: {wallet.address}")
 
 # ==========================================
 # 2. Token-Discovery mit DexScreener API (kostenlos)
@@ -75,6 +80,26 @@ ROUTER_ABI = [
         "stateMutability": "nonpayable",
         "type": "function"
     }
+]
+
+ERC20_ABI = [
+    {
+        "constant": False,
+        "inputs": [
+            {"name": "_spender", "type": "address"},
+            {"name": "_value", "type": "uint256"},
+        ],
+        "name": "approve",
+        "outputs": [{"name": "", "type": "bool"}],
+        "type": "function",
+    },
+    {
+        "constant": True,
+        "inputs": [{"name": "_owner", "type": "address"}],
+        "name": "balanceOf",
+        "outputs": [{"name": "balance", "type": "uint256"}],
+        "type": "function",
+    },
 ]
 
 # ==========================================
@@ -168,170 +193,197 @@ def buy_token_with_bnb(token_address, amount_bnb):
         print("❌ Kauf fehlgeschlagen")
         return None
 
-def sell_token(token_address, amount_percent=100):
-    """Verkauft einen Token über PancakeSwap."""
+def get_current_price_bnb(token_address):
+    """Ruft den aktuellen Token-Preis in BNB über DexScreener ab."""
+    try:
+        url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
+        response = requests.get(url, timeout=10)
+        data = response.json()
+        if data.get("pairs"):
+            pair = data["pairs"][0]
+            price_usd = float(pair.get("priceUsd", 0))
+            price_native = float(pair.get("priceNative", 0))
+            if price_native > 0:
+                return price_native, price_usd
+            return price_usd / 600, price_usd
+    except Exception as e:
+        print(f"⚠️ Preisabfrage fehlgeschlagen: {e}")
+    return None, None
+
+
+def sell_token(token_address, amount_percent=100, symbol="?", entry_price_bnb=None):
+    """Verkauft einen Token über PancakeSwap (mit ERC20-Approve)."""
     print(f"📤 Verkaufe Token {token_address} ({amount_percent}%)...")
-    
+
     w3 = Web3(Web3.HTTPProvider(BSC_MAINNET_RPC))
     if not w3.is_connected():
         print("❌ Keine Verbindung zum BSC Mainnet")
         return None
-    
+
     private_key = os.getenv("PRIVATE_KEY")
     account = w3.eth.account.from_key(private_key)
-    
+
     router = w3.eth.contract(address=PANCAKE_ROUTER, abi=ROUTER_ABI)
-    
-    # Token-Balance abrufen
-    token_contract = w3.eth.contract(
-        address=token_address,
-        abi=[{"constant": True, "inputs": [{"name": "_owner", "type": "address"}], "name": "balanceOf", "outputs": [{"name": "balance", "type": "uint256"}], "type": "function"}]
-    )
+    token_contract = w3.eth.contract(address=token_address, abi=ERC20_ABI)
     balance = token_contract.functions.balanceOf(account.address).call()
-    
+
     if balance == 0:
         print("❌ Kein Token-Bestand zum Verkaufen")
         return None
-    
+
     amount_to_sell = int(balance * amount_percent / 100)
-    
+    nonce = w3.eth.get_transaction_count(account.address)
+
+    approve_tx = token_contract.functions.approve(
+        PANCAKE_ROUTER, amount_to_sell
+    ).build_transaction({
+        "from": account.address,
+        "gas": 100000,
+        "gasPrice": w3.eth.gas_price,
+        "nonce": nonce,
+    })
+    signed_approve = account.sign_transaction(approve_tx)
+    approve_hash = w3.eth.send_raw_transaction(signed_approve.raw_transaction)
+    w3.eth.wait_for_transaction_receipt(approve_hash, timeout=60)
+    print(f"✅ Approve bestätigt: {approve_hash.hex()}")
+
     tx = router.functions.swapExactTokensForETH(
         amount_to_sell,
         0,
         [token_address, WBNB],
         account.address,
-        int(time.time()) + 1200
+        int(time.time()) + 1200,
     ).build_transaction({
-        'from': account.address,
-        'gas': 500000,
-        'gasPrice': w3.eth.gas_price,
-        'nonce': w3.eth.get_transaction_count(account.address)
+        "from": account.address,
+        "gas": 500000,
+        "gasPrice": w3.eth.gas_price,
+        "nonce": nonce + 1,
     })
-    
+
     signed = account.sign_transaction(tx)
     tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
     print(f"✅ Verkauf-Transaktion gesendet: {tx_hash.hex()}")
-    
+
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
-    if receipt['status'] == 1:
+    if receipt["status"] == 1:
         print(f"✅ Verkauf erfolgreich! Tx: {tx_hash.hex()}")
+        exit_price_bnb, exit_price_usd = get_current_price_bnb(token_address)
+        pnl = None
+        if entry_price_bnb and exit_price_usd:
+            pnl = ((exit_price_usd - (entry_price_bnb * 600)) / (entry_price_bnb * 600)) * CONFIG["buy_amount_bnb"] * 600
+        log_trade(
+            "SELL", token_address, symbol, amount_percent,
+            exit_price_bnb or 0, tx_hash.hex(), pnl=pnl,
+        )
+        close_position(token_address)
         return tx_hash.hex()
     else:
         print("❌ Verkauf fehlgeschlagen")
         return None
 
-def monitor_position(token_address, entry_price_bnb):
+def monitor_position(token_address, entry_price_bnb, symbol="?"):
     """Überwacht die Position und verkauft bei TP oder SL."""
-    print(f"📊 Überwache Position: {token_address}")
+    print(f"📊 Überwache Position: {symbol} ({token_address})")
     print(f"   Einstiegspreis: {entry_price_bnb:.6f} BNB")
     print(f"   📈 Take-Profit: +{CONFIG['take_profit_percent']}%")
     print(f"   📉 Stop-Loss: -{CONFIG['stop_loss_percent']}%")
-    
-    w3 = Web3(Web3.HTTPProvider(BSC_MAINNET_RPC))
-    private_key = os.getenv("PRIVATE_KEY")
-    account = w3.eth.account.from_key(private_key)
-    
-    # Token-Contract für Balance
-    token_contract = w3.eth.contract(
-        address=token_address,
-        abi=[{"constant": True, "inputs": [{"name": "_owner", "type": "address"}], "name": "balanceOf", "outputs": [{"name": "balance", "type": "uint256"}], "type": "function"}]
-    )
-    
+
     while True:
         try:
-            # Aktuellen Token-Preis abrufen (über PancakeSwap)
-            # Vereinfacht: Wir holen den Preis über DexScreener
-            url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
-            response = requests.get(url, timeout=10)
-            data = response.json()
-            
-            if data.get("pairs"):
-                pair = data["pairs"][0]
-                price_usd = float(pair.get("priceUsd", 0))
-                price_bnb = price_usd / 600  # Ungefährer BNB-Preis
-                
-                # Gewinn/Verlust berechnen
+            price_bnb, price_usd = get_current_price_bnb(token_address)
+
+            if price_bnb and entry_price_bnb > 0:
                 price_change = ((price_bnb - entry_price_bnb) / entry_price_bnb) * 100
                 print(f"📊 Aktueller Preis: ${price_usd:.4f} | Veränderung: {price_change:.2f}%")
-                
-                # Take-Profit prüfen
+
                 if price_change >= CONFIG["take_profit_percent"]:
                     print(f"✅ Take-Profit erreicht! ({price_change:.2f}%)")
-                    sell_token(token_address)
+                    sell_token(token_address, symbol=symbol, entry_price_bnb=entry_price_bnb)
                     return True
-                
-                # Stop-Loss prüfen
+
                 if price_change <= -CONFIG["stop_loss_percent"]:
                     print(f"❌ Stop-Loss ausgelöst! ({price_change:.2f}%)")
-                    sell_token(token_address)
+                    sell_token(token_address, symbol=symbol, entry_price_bnb=entry_price_bnb)
                     return True
-            
-            time.sleep(30)  # Alle 30 Sekunden prüfen
-            
+
+            time.sleep(30)
+
         except KeyboardInterrupt:
             print("\n🛑 Überwachung manuell gestoppt.")
             break
         except Exception as e:
             print(f"⚠️ Fehler bei Überwachung: {e}")
             time.sleep(60)
-    
+
     return False
 
 # ==========================================
 # 6. Hauptprogramm
 # ==========================================
 def main():
-    print("\n" + "="*50)
+    print_status_header()
+    print(f"✅ Agent-Wallet verbunden: {wallet.address}")
+    print("\n" + "=" * 50)
     print("🚀 MEME-COIN SNIPER AGENT (1 USD TRADES)")
-    print("="*50)
-    
-    # 1. Neue Tokens abrufen
+    print("=" * 50)
+
+    # Offene Positionen beim Start wieder aufnehmen
+    if has_open_positions():
+        resumed = resume_open_positions(monitor_position)
+        if resumed:
+            print("\n🏁 Positionsüberwachung beendet.")
+            return
+
+    # Kein neuer Kauf, solange eine Position offen ist
+    if has_open_positions():
+        print("⏸️ Offene Position aktiv – kein neuer Kauf.")
+        return
+
     print("🔍 Suche nach neuen BSC-Tokens...")
     tokens = get_new_bsc_tokens()
     if not tokens:
         print("❌ Keine Tokens gefunden.")
         return
-    
+
     print(f"📊 Gefundene BSC-Tokens: {len(tokens)}")
-    
-    # 2. Tokens filtern
+
     attractive_tokens = []
     for token in tokens:
         if is_token_attractive(token):
             attractive_tokens.append(token)
-    
+
     if not attractive_tokens:
         print("❌ Kein attraktiver Token gefunden.")
         return
-    
+
     print(f"✅ {len(attractive_tokens)} attraktive Token gefunden!")
-    
-    # 3. Besten Token auswählen
+
     best_token = max(attractive_tokens, key=lambda x: float(x.get("liquidity", {}).get("usd", 0)))
     token_address = best_token.get("baseToken", {}).get("address")
     token_symbol = best_token.get("baseToken", {}).get("symbol", "UNKNOWN")
     token_liq = float(best_token.get("liquidity", {}).get("usd", 0))
-    entry_price_bnb = 0.0017  # Ungefährer Einstiegspreis
-    
+    entry_price_bnb = float(best_token.get("priceNative", 0)) or CONFIG["buy_amount_bnb"]
+
     print(f"\n🎯 Beste Token: {token_symbol}")
     print(f"   Adresse: {token_address}")
     print(f"   Liquidität: ${token_liq:.2f}")
-    
-    # 4. Kauf ausführen
+
     buy_amount_bnb = CONFIG["buy_amount_bnb"]
     print(f"\n💰 Kaufe Token mit {buy_amount_bnb} BNB (~1 USD)...")
-    
+
     tx_hash = buy_token_with_bnb(token_address, buy_amount_bnb)
     if tx_hash:
         print(f"✅ Position für {token_symbol} eröffnet!")
         print(f"📊 Tx Hash: {tx_hash}")
-        
-        # 5. Position überwachen (TP/SL)
+
+        save_position(token_address, token_symbol, entry_price_bnb, buy_amount_bnb, tx_hash)
+        log_trade("BUY", token_address, token_symbol, buy_amount_bnb, entry_price_bnb, tx_hash)
+
         print("\n🔍 Starte Positionsüberwachung...")
-        monitor_position(token_address, entry_price_bnb)
+        monitor_position(token_address, entry_price_bnb, token_symbol)
     else:
         print("❌ Kauf fehlgeschlagen.")
-    
+
     print("\n🏁 Analyse beendet.")
 
 if __name__ == "__main__":

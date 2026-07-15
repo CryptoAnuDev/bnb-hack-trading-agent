@@ -1,77 +1,33 @@
 import os
 import time
 import requests
-import hashlib
-import hmac
-import json
+from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
 
-print("🤖 Starte ApeX Omni Perpetual Trading Agent (MAINNET) - REST API...")
+AGENT_NAME = "ApeX Omni Perpetual Trader"
 
-# ==========================================
-# 1. ApeX API Einstellungen
-# ==========================================
 API_KEY = os.getenv("APEX_API_KEY")
 API_SECRET = os.getenv("APEX_API_SECRET")
 PASSPHRASE = os.getenv("APEX_PASSPHRASE")
+APEX_OMNI_SEED = os.getenv("APEX_OMNI_SEED")
+APEX_L2_KEY = os.getenv("APEX_L2_KEY", "")
 
-if not all([API_KEY, API_SECRET, PASSPHRASE]):
-    print("⚠️ Bitte trage alle API-Keys in deine .env-Datei ein!")
-    print("📝 Benötigt: APEX_API_KEY, APEX_API_SECRET, APEX_PASSPHRASE")
-    exit(1)
+SYMBOL = "BNB-USDT"
+TICKER_SYMBOL = "BNBUSDT"
 
-BASE_URL = "https://omni.apex.exchange"
 
-# ==========================================
-# 2. ApeX API Helfer
-# ==========================================
-def apex_request(method, path, payload=None):
-    timestamp = str(int(time.time() * 1000))
-    body = json.dumps(payload) if payload else ""
-    
-    # Signatur: timestamp + method + path + body
-    message = timestamp + method + path + body
-    signature = hmac.new(
-        API_SECRET.encode('utf-8'),
-        message.encode('utf-8'),
-        hashlib.sha256
-    ).hexdigest()
-    
-    headers = {
-        "Content-Type": "application/json",
-        "X-API-Key": API_KEY,
-        "X-Signature": signature,
-        "X-Timestamp": timestamp,
-        "X-Passphrase": PASSPHRASE
-    }
-    
-    url = BASE_URL + path
-    
-    try:
-        if method == "GET":
-            response = requests.get(url, headers=headers)
-        else:
-            response = requests.post(url, headers=headers, json=payload)
-        
-        if response.status_code == 200:
-            return response.json()
-        else:
-            print(f"❌ Fehler: {response.status_code} - {response.text[:200]}")
-            return None
-    except Exception as e:
-        print(f"❌ Fehler bei Anfrage: {e}")
-        return None
+def print_status_header():
+    print("=" * 50)
+    print(f"🤖 {AGENT_NAME} – {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 50)
 
-# ==========================================
-# 3. Fear & Greed Daten
-# ==========================================
+
 def get_fear_and_greed():
     print("📊 Frage Fear & Greed Index ab...")
     try:
-        url = "https://api.alternative.me/fng/"
-        response = requests.get(url, timeout=10)
+        response = requests.get("https://api.alternative.me/fng/", timeout=10)
         data = response.json()
         if data and "data" in data:
             latest = data["data"][0]
@@ -83,9 +39,7 @@ def get_fear_and_greed():
         print(f"⚠️ Fehler beim Abrufen der Daten: {e}")
     return None, None
 
-# ==========================================
-# 4. Risikomanager
-# ==========================================
+
 class PerpRiskManager:
     def __init__(self, max_leverage=2, max_position_usd=10):
         self.max_leverage = max_leverage
@@ -111,51 +65,122 @@ class PerpRiskManager:
             print(f"🔒 Schließe {self.position['side']}-Position...")
             self.position = None
             return True
-        else:
-            print("ℹ️ Keine Position zum Schließen.")
-            return False
+        print("ℹ️ Keine Position zum Schließen.")
+        return False
 
-# ==========================================
-# 5. ApeX Trade ausführen
-# ==========================================
-def execute_apex_trade(side, leverage, size_usd):
-    print(f"📤 Sende {side}-Order an ApeX Omni...")
-    
-    order_side = "BUY" if side == "LONG" else "SELL"
-    symbol = "BNB-USDT"
-    
-    order_data = {
-        "symbol": symbol,
-        "side": order_side,
-        "orderType": "MARKET",
-        "quantity": str(size_usd),
-        "leverage": str(leverage)
-    }
-    
-    print(f"📋 Order-Daten: {order_data}")
-    result = apex_request("POST", "/api/v3/order", order_data)
-    
-    if result and result.get("code") == 0:
-        print(f"✅ Order erfolgreich: {result}")
-        return result
-    else:
-        print(f"❌ Order fehlgeschlagen: {result}")
+
+def init_apex_client():
+    missing = []
+    if not API_KEY:
+        missing.append("APEX_API_KEY")
+    if not API_SECRET:
+        missing.append("APEX_API_SECRET")
+    if not PASSPHRASE:
+        missing.append("APEX_PASSPHRASE")
+    if not APEX_OMNI_SEED:
+        missing.append("APEX_OMNI_SEED")
+
+    if missing:
+        print(f"❌ Fehlende .env-Variablen: {', '.join(missing)}")
+        print("📝 Keys generieren: https://omni.apex.exchange/keyManagement")
+        print("   Benötigt: API Key + Omni Key (seeds) + Passphrase")
         return None
 
-# ==========================================
-# 6. Hauptprogramm
-# ==========================================
-if __name__ == "__main__":
-    print("\n" + "="*50)
-    print("🚀 BNB HACK APEX OMN I TRADING AGENT")
-    print("="*50)
+    try:
+        from apexomni.http_private_sign import HttpPrivateSign
+        from apexomni.constants import APEX_OMNI_HTTP_MAIN, NETWORKID_OMNI_MAIN_ARB
+
+        client = HttpPrivateSign(
+            APEX_OMNI_HTTP_MAIN,
+            network_id=NETWORKID_OMNI_MAIN_ARB,
+            zk_seeds=APEX_OMNI_SEED,
+            zk_l2Key=APEX_L2_KEY,
+            api_key_credentials={
+                "key": API_KEY,
+                "secret": API_SECRET,
+                "passphrase": PASSPHRASE,
+            },
+        )
+        client.configs_v3()
+        account = client.get_account_v3()
+        balance = client.get_account_balance_v3()
+        print("✅ ApeX Omni Client initialisiert")
+        print(f"📊 Account: {account.get('data', account)}")
+        print(f"💰 Balance: {balance.get('data', balance)}")
+        return client
+    except ImportError:
+        print("❌ apexomni nicht installiert. Führe aus: pip install apexomni")
+        return None
+    except Exception as e:
+        print(f"❌ Fehler bei Client-Initialisierung: {e}")
+        return None
+
+
+def get_market_price():
+    try:
+        from apexomni.http_public import HttpPublic
+        from apexomni.constants import APEX_OMNI_HTTP_MAIN
+
+        public = HttpPublic(APEX_OMNI_HTTP_MAIN)
+        ticker = public.ticker_v3(symbol=TICKER_SYMBOL)
+        data = ticker.get("data", [])
+        if data:
+            return float(data[0].get("lastPrice") or data[0].get("markPrice", 0))
+    except Exception as e:
+        print(f"⚠️ Ticker-Abruf fehlgeschlagen: {e}")
+    return None
+
+
+def execute_apex_trade(client, side, leverage, size_usd):
+    print(f"📤 Sende {side}-Order an ApeX Omni...")
+    order_side = "BUY" if side == "LONG" else "SELL"
+
+    price = get_market_price()
+    if not price or price <= 0:
+        print("❌ Konnte keinen Marktpreis für BNB abrufen")
+        return None
+
+    size_bnb = size_usd / price
+    margin_rate = str(round(1 / leverage, 4))
+
+    try:
+        client.set_initial_margin_rate_v3(symbol=SYMBOL, initialMarginRate=margin_rate)
+        print(f"📊 Hebel {leverage}x gesetzt (Margin Rate: {margin_rate})")
+    except Exception as e:
+        print(f"⚠️ Fehler beim Setzen des Hebels: {e}")
+
+    try:
+        result = client.create_order_v3(
+            symbol=SYMBOL,
+            side=order_side,
+            type="MARKET",
+            size=str(round(size_bnb, 4)),
+            timestampSeconds=time.time(),
+            price=str(round(price, 2)),
+        )
+        if result and result.get("code") == 0:
+            print(f"✅ Order erfolgreich: {result}")
+            return result
+        print(f"❌ Order fehlgeschlagen: {result}")
+        return None
+    except Exception as e:
+        print(f"❌ Fehler bei ApeX-Order: {e}")
+        return None
+
+
+def main():
+    print_status_header()
+
+    client = init_apex_client()
+    if client is None:
+        return
 
     risk_mgr = PerpRiskManager(max_leverage=2, max_position_usd=10)
 
     value, _ = get_fear_and_greed()
     if value is None:
         print("❌ Konnte Marktdaten nicht abrufen.")
-        exit(1)
+        return
 
     if value <= 25:
         action = "LONG"
@@ -177,13 +202,13 @@ if __name__ == "__main__":
 
     if action in ["LONG", "SHORT"]:
         if risk_mgr.can_open_position(action, leverage, trade_amount):
-            result = execute_apex_trade(action, leverage, trade_amount)
+            result = execute_apex_trade(client, action, leverage, trade_amount)
             if result:
                 risk_mgr.position = {
                     "side": action,
                     "leverage": leverage,
                     "size_usd": trade_amount,
-                    "entry_price": "MARKET"
+                    "entry_price": "MARKET",
                 }
                 print("✅ Perp-Trade erfolgreich ausgeführt!")
             else:
@@ -195,3 +220,7 @@ if __name__ == "__main__":
         print("⏳ Keine neue Position.")
 
     print("\n🏁 Analyse beendet.")
+
+
+if __name__ == "__main__":
+    main()

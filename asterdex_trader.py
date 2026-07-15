@@ -1,55 +1,47 @@
 import os
-import time
 import requests
+from datetime import datetime
 from dotenv import load_dotenv
-from web3 import Web3
 from bnbagent import EVMWalletProvider
 
-# Lade .env (für Wallet und andere Secrets)
 load_dotenv()
 
-print("🤖 Starte AsterDEX Perpetual Trading Agent (MAINNET)...")
+AGENT_NAME = "AsterDEX Perpetual Trader"
 
-# ==========================================
-# 1. Wallet verbinden (mit .env-Werten)
-# ==========================================
-wallet = EVMWalletProvider(
-    password=os.getenv("WALLET_PASSWORD"),
-    private_key=os.getenv("PRIVATE_KEY")
-)
-print(f"✅ Agent-Wallet verbunden: {wallet.address}")
-
-# ==========================================
-# 2. AsterDEX (ApolloX) Client mit deinen neuen Keys
-# ==========================================
-# ⚠️ HIER deine neuen API-Keys von AsterDEX eintragen!
+PRIVATE_KEY = os.getenv("PRIVATE_KEY")
+WALLET_PASSWORD = os.getenv("WALLET_PASSWORD")
 APOLLOX_API_KEY = os.getenv("APOLLOX_API_KEY")
 APOLLOX_API_SECRET = os.getenv("APOLLOX_API_SECRET")
 
-if not APOLLOX_API_KEY or not APOLLOX_API_SECRET:
-    print("❌ APOLLOX_API_KEY / APOLLOX_API_SECRET in .env fehlen")
-    client = None
+client = None
 
-# Client initialisieren
-try:
-    from apollox.rest_api import Client
-    client = Client(key=APOLLOX_API_KEY, secret=APOLLOX_API_SECRET)
-    print("✅ AsterDEX Client initialisiert")
-except ImportError:
-    print("❌ ApolloX-Connector nicht installiert. Führe aus: py -m pip install apollox-connector-python")
-    client = None
-except Exception as e:
-    print(f"❌ Fehler bei Client-Initialisierung: {e}")
-    client = None
 
-# ==========================================
-# 3. Fear & Greed Daten
-# ==========================================
+def print_status_header():
+    print("=" * 50)
+    print(f"🤖 {AGENT_NAME} – {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 50)
+
+
+def init_client():
+    global client
+    if not APOLLOX_API_KEY or not APOLLOX_API_SECRET:
+        print("⚠️ APOLLOX_API_KEY / APOLLOX_API_SECRET nicht in .env gefunden")
+        return
+
+    try:
+        from apollox.rest_api import Client
+        client = Client(key=APOLLOX_API_KEY, secret=APOLLOX_API_SECRET)
+        print("✅ AsterDEX Client initialisiert")
+    except ImportError:
+        print("❌ ApolloX-Connector nicht installiert. Führe aus: pip install apollox-connector-python")
+    except Exception as e:
+        print(f"❌ Fehler bei Client-Initialisierung: {e}")
+
+
 def get_fear_and_greed():
     print("📊 Frage Fear & Greed Index ab...")
     try:
-        url = "https://api.alternative.me/fng/"
-        response = requests.get(url, timeout=10)
+        response = requests.get("https://api.alternative.me/fng/", timeout=10)
         data = response.json()
         if data and "data" in data:
             latest = data["data"][0]
@@ -61,9 +53,7 @@ def get_fear_and_greed():
         print(f"⚠️ Fehler beim Abrufen der Daten: {e}")
     return None, None
 
-# ==========================================
-# 4. Risikomanager
-# ==========================================
+
 class PerpRiskManager:
     def __init__(self, max_leverage=2, max_position_usd=10):
         self.max_leverage = max_leverage
@@ -89,30 +79,23 @@ class PerpRiskManager:
             print(f"🔒 Schließe {self.position['side']}-Position...")
             self.position = None
             return True
-        else:
-            print("ℹ️ Keine Position zum Schließen.")
-            return False
+        print("ℹ️ Keine Position zum Schließen.")
+        return False
 
-# ==========================================
-# 5. AsterDEX Trade ausführen
-# ==========================================
+
 def execute_asterdex_trade(side, leverage, size_usd):
     if client is None:
-        print("⚠️ Kein API-Client. Führe Simulation aus...")
-        print(f"🔄 SIMULATION: {side}-Position mit {leverage}x Hebel, ${size_usd} USD")
-        return {"orderId": "sim-12345", "status": "FILLED"}
+        print("⚠️ Kein API-Client verfügbar.")
+        return None
 
     try:
-        symbol = "BNBUSDT"
-        # Bei AsterDEX: side = "BUY" für Long, "SELL" für Short
         aster_side = "BUY" if side == "LONG" else "SELL"
-        
         params = {
-            'symbol': symbol,
-            'side': aster_side,
-            'type': 'MARKET',
-            'quantity': size_usd,  # In USD
-            'leverage': leverage
+            "symbol": "BNBUSDT",
+            "side": aster_side,
+            "type": "MARKET",
+            "quantity": size_usd,
+            "leverage": leverage,
         }
         print(f"📤 Sende Order an AsterDEX: {params}")
         response = client.new_order(**params)
@@ -122,20 +105,21 @@ def execute_asterdex_trade(side, leverage, size_usd):
         print(f"❌ Fehler bei AsterDEX-Order: {e}")
         return None
 
-# ==========================================
-# 6. Hauptprogramm
-# ==========================================
-if __name__ == "__main__":
-    print("\n" + "="*50)
-    print("🚀 BNB HACK ASTERDEX PERPETUAL TRADING AGENT")
-    print("="*50)
+
+def main():
+    print_status_header()
+
+    wallet = EVMWalletProvider(password=WALLET_PASSWORD, private_key=PRIVATE_KEY)
+    print(f"✅ Agent-Wallet verbunden: {wallet.address}")
+
+    init_client()
 
     risk_mgr = PerpRiskManager(max_leverage=2, max_position_usd=10)
 
     value, _ = get_fear_and_greed()
     if value is None:
         print("❌ Konnte Marktdaten nicht abrufen.")
-        exit(1)
+        return
 
     if value <= 25:
         action = "LONG"
@@ -163,7 +147,7 @@ if __name__ == "__main__":
                     "side": action,
                     "leverage": leverage,
                     "size_usd": trade_amount,
-                    "entry_price": "MARKET"
+                    "entry_price": "MARKET",
                 }
                 print("✅ Perp-Trade erfolgreich ausgeführt!")
             else:
@@ -175,3 +159,7 @@ if __name__ == "__main__":
         print("⏳ Keine neue Position.")
 
     print("\n🏁 Analyse beendet.")
+
+
+if __name__ == "__main__":
+    main()

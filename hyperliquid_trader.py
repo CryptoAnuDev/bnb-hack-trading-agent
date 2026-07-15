@@ -1,52 +1,30 @@
 import os
-import time
 import requests
+import eth_account
+from datetime import datetime
 from dotenv import load_dotenv
-from bnbagent import EVMWalletProvider
 from hyperliquid.info import Info
 from hyperliquid.exchange import Exchange
 from hyperliquid.utils import constants
-import eth_account
 
 load_dotenv()
 
-print("🤖 Starte Hyperliquid Perpetual Trading Agent (MAINNET)...")
+AGENT_NAME = "Hyperliquid Perpetual Trader"
 
-# ==========================================
-# 1. Wallet verbinden
-# ==========================================
-private_key = os.getenv("PRIVATE_KEY")
-if not private_key:
-    print("❌ PRIVATE_KEY nicht in .env gefunden")
-    exit(1)
+PRIVATE_KEY = os.getenv("PRIVATE_KEY")
+HYPERLIQUID_MAIN_ADDRESS = os.getenv("HYPERLIQUID_MAIN_ADDRESS")
 
-try:
-    account = eth_account.Account.from_key(private_key)
-    wallet_address = account.address
-    print(f"✅ Agent-Wallet verbunden: {wallet_address}")
-except Exception as e:
-    print(f"❌ Fehler beim Erstellen des Accounts: {e}")
-    exit(1)
 
-# ==========================================
-# 2. Hyperliquid Client initialisieren
-# ==========================================
-try:
-    info = Info(constants.MAINNET_API_URL, skip_ws=True)
-    exchange = Exchange(account, constants.MAINNET_API_URL)
-    print("✅ Hyperliquid Client initialisiert")
-except Exception as e:
-    print(f"❌ Fehler bei Client-Initialisierung: {e}")
-    exit(1)
+def print_status_header():
+    print("=" * 50)
+    print(f"🤖 {AGENT_NAME} – {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 50)
 
-# ==========================================
-# 3. Fear & Greed Daten
-# ==========================================
+
 def get_fear_and_greed():
     print("📊 Frage Fear & Greed Index ab...")
     try:
-        url = "https://api.alternative.me/fng/"
-        response = requests.get(url, timeout=10)
+        response = requests.get("https://api.alternative.me/fng/", timeout=10)
         data = response.json()
         if data and "data" in data:
             latest = data["data"][0]
@@ -58,9 +36,7 @@ def get_fear_and_greed():
         print(f"⚠️ Fehler beim Abrufen der Daten: {e}")
     return None, None
 
-# ==========================================
-# 4. Risikomanager
-# ==========================================
+
 class PerpRiskManager:
     def __init__(self, max_leverage=2, max_position_usd=10):
         self.max_leverage = max_leverage
@@ -86,61 +62,64 @@ class PerpRiskManager:
             print(f"🔒 Schließe {self.position['side']}-Position...")
             self.position = None
             return True
-        else:
-            print("ℹ️ Keine Position zum Schließen.")
-            return False
+        print("ℹ️ Keine Position zum Schließen.")
+        return False
 
-# ==========================================
-# 5. Hyperliquid Trade ausführen
-# ==========================================
-def execute_hyperliquid_trade(side, leverage, size_usd):
+
+def execute_hyperliquid_trade(exchange, side, leverage, size_usd):
     print(f"📤 Sende {side}-Order an Hyperliquid...")
     coin = "BNB"
     sz = 0.01 if size_usd <= 10 else 0.02
-    
+
     try:
         exchange.update_leverage(leverage, coin)
         print(f"📊 Hebel {leverage}x für {coin} gesetzt")
     except Exception as e:
         print(f"⚠️ Fehler beim Setzen des Hebels: {e}")
-    
+
     try:
-        if side == "LONG":
-            order = exchange.order(
-                coin,                # Coin-Name
-                True,                # is_buy = Long
-                sz,                  # Größe
-                0,                   # limit_px = Market-Order
-                {"limit": {"tif": "Gtc"}}
-            )
-        else:
-            order = exchange.order(
-                coin,
-                False,               # is_buy = Short
-                sz,
-                0,
-                {"limit": {"tif": "Gtc"}}
-            )
+        is_buy = side == "LONG"
+        order = exchange.order(coin, is_buy, sz, 0, {"limit": {"tif": "Gtc"}})
         print(f"✅ Order erfolgreich: {order}")
         return order
     except Exception as e:
         print(f"❌ Fehler bei Hyperliquid-Order: {e}")
         return None
 
-# ==========================================
-# 6. Hauptprogramm
-# ==========================================
-if __name__ == "__main__":
-    print("\n" + "="*50)
-    print("🚀 BNB HACK HYPERLIQUID TRADING AGENT")
-    print("="*50)
+
+def main():
+    print_status_header()
+
+    if not PRIVATE_KEY:
+        print("❌ PRIVATE_KEY nicht in .env gefunden")
+        return
+
+    try:
+        account = eth_account.Account.from_key(PRIVATE_KEY)
+        wallet_address = HYPERLIQUID_MAIN_ADDRESS or account.address
+        print(f"✅ Agent-Wallet verbunden: {wallet_address}")
+    except Exception as e:
+        print(f"❌ Fehler beim Erstellen des Accounts: {e}")
+        return
+
+    try:
+        info = Info(constants.MAINNET_API_URL, skip_ws=True)
+        exchange = Exchange(
+            account,
+            constants.MAINNET_API_URL,
+            account_address=wallet_address if HYPERLIQUID_MAIN_ADDRESS else None,
+        )
+        print("✅ Hyperliquid Client initialisiert")
+    except Exception as e:
+        print(f"❌ Fehler bei Client-Initialisierung: {e}")
+        return
 
     risk_mgr = PerpRiskManager(max_leverage=2, max_position_usd=10)
 
     value, _ = get_fear_and_greed()
     if value is None:
         print("❌ Konnte Marktdaten nicht abrufen.")
-        exit(1)
+        return
 
     if value <= 25:
         action = "LONG"
@@ -162,13 +141,13 @@ if __name__ == "__main__":
 
     if action in ["LONG", "SHORT"]:
         if risk_mgr.can_open_position(action, leverage, trade_amount):
-            result = execute_hyperliquid_trade(action, leverage, trade_amount)
+            result = execute_hyperliquid_trade(exchange, action, leverage, trade_amount)
             if result:
                 risk_mgr.position = {
                     "side": action,
                     "leverage": leverage,
                     "size_usd": trade_amount,
-                    "entry_price": "MARKET"
+                    "entry_price": "MARKET",
                 }
                 print("✅ Perp-Trade erfolgreich ausgeführt!")
             else:
@@ -180,3 +159,7 @@ if __name__ == "__main__":
         print("⏳ Keine neue Position.")
 
     print("\n🏁 Analyse beendet.")
+
+
+if __name__ == "__main__":
+    main()

@@ -147,6 +147,13 @@ activemq-data/
 # SageMath parsed files
 *.sage.py
 
+# Agent runtime data (local only)
+positions.json
+trades.json
+lunc_positions.json
+lunc_trades.json
+seen_pump_mints.json
+
 # Environments
 .env
 .envrc
